@@ -1,5 +1,57 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
+
+let ratelimitInstance = null;
+
+function getRateLimiter() {
+  if (ratelimitInstance) {
+    return ratelimitInstance;
+  }
+
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (!url || !token) {
+    return null;
+  }
+
+  try {
+    const redis = new Redis({
+      url,
+      token,
+    });
+
+    ratelimitInstance = new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(10, "60 s"),
+      analytics: false,
+    });
+
+    return ratelimitInstance;
+  } catch (error) {
+    console.error("Failed to initialize rate limiter:", error?.message || error);
+    return null;
+  }
+}
+
+function getClientIp(request) {
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp && realIp.trim()) {
+    return realIp.trim();
+  }
+
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (forwardedFor && forwardedFor.trim()) {
+    const firstIp = forwardedFor.split(",")[0].trim();
+    if (firstIp) {
+      return firstIp;
+    }
+  }
+
+  return "127.0.0.1";
+}
 
 const MODEL_ID = "gemini-3.5-flash-lite";
 
@@ -269,7 +321,57 @@ export async function POST(request) {
       );
     }
 
-    // 4. Validate API key presence
+    // 4. Distributed Rate Limiting (maximum 10 requests per IP in rolling 60s window)
+    const clientIp = getClientIp(request);
+    let rateLimitResult;
+
+    try {
+      const limiter = getRateLimiter();
+      if (!limiter) {
+        return NextResponse.json(
+          {
+            error:
+              "Rate limiting service is unavailable. Please try again later.",
+          },
+          { status: 503 }
+        );
+      }
+
+      rateLimitResult = await limiter.limit(clientIp);
+    } catch (rlError) {
+      console.error(
+        "Rate limiting check failed:",
+        rlError?.message || rlError
+      );
+      return NextResponse.json(
+        {
+          error:
+            "Rate limiting service is unavailable. Please try again later.",
+        },
+        { status: 503 }
+      );
+    }
+
+    if (!rateLimitResult.success) {
+      const retryAfter = Math.max(
+        1,
+        Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
+      );
+
+      return NextResponse.json(
+        {
+          error: `Rate limit exceeded. Too many requests. Please try again in ${retryAfter} seconds.`,
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(retryAfter),
+          },
+        }
+      );
+    }
+
+    // 5. Validate API key presence
     const apiKey = process.env.GEMINI_API_KEY;
     if (
       !apiKey ||
@@ -285,7 +387,7 @@ export async function POST(request) {
       );
     }
 
-    // 5. Initialize GoogleGenAI SDK
+    // 6. Initialize GoogleGenAI SDK
     const ai = new GoogleGenAI({ apiKey });
 
     // 6. Build prompt combining mode instructions and student notes
