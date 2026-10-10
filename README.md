@@ -133,3 +133,17 @@ Potential improvements include additional study modes, more flexible quiz settin
 ## License
 
 No license has been specified yet. Contact the repository owner before reusing or redistributing this project.
+
+## Screenshots
+
+### StudyMate AI Dashboard
+
+![StudyMate AI dashboard](public/screenshots/studymate-dashboard.png)
+
+### AI-Generated Summary
+
+![StudyMate AI summary](public/screenshots/studymate-summary.png)
+
+### Interactive Quiz
+
+![StudyMate AI quiz](public/screenshots/studymate-quiz.png)
